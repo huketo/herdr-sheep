@@ -55,6 +55,11 @@ pub const FACE: Color = c(231);
 pub const HORN: Color = c(179);
 pub const LEG: Color = c(244);
 pub const GROUND: Color = c(65);
+/// Weathered wood, for the fences and the barn. Dim enough to read as
+/// background behind the sheep.
+pub const FENCE: Color = c(101);
+/// The barn's painted boards, a shade warmer than the rails.
+pub const BARN: Color = c(131);
 pub const HEADER: Color = c(250);
 pub const MUTED: Color = c(244);
 pub const ACCENT: Color = c(45);

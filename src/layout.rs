@@ -6,7 +6,7 @@
 //! whole pasture degrades to a one-line-per-agent list.
 
 use crate::herdr::Status;
-use crate::sprite::{SPRITE_H, SPRITE_W};
+use crate::sprite::{BARN_H, BARN_W, SPRITE_H, SPRITE_W};
 
 /// Rows reserved at the bottom: selection detail, then the key hints.
 pub const FOOTER_H: i32 = 2;
@@ -17,6 +17,8 @@ pub const HEADER_H: i32 = 1;
 const MIN_LANE: i32 = SPRITE_W + 2;
 /// Narrowest lane a running sheep gets, so there is room to actually run.
 const MIN_RUN_LANE: i32 = SPRITE_W + 6;
+/// Columns kept between the barn and the right edge of the pane.
+const BARN_MARGIN: i32 = 2;
 
 /// States whose sheep draw something over their heads: a question bubble,
 /// sparkles, or sleep glyphs. Those zones reserve one extra row per sheep row.
@@ -56,6 +58,10 @@ pub struct Slot {
     pub lane_x: i32,
     pub lane_w: i32,
     pub y: i32,
+    /// First row the slot owns, which is the overhead cue row when the state
+    /// draws one. `top..=y + SPRITE_H` tiles the zone, so it doubles as the
+    /// click target.
+    pub top: i32,
 }
 
 impl Slot {
@@ -67,6 +73,15 @@ impl Slot {
     /// Lane-centered x, for sheep that are not moving.
     pub fn center_x(&self) -> f32 {
         self.lane_x as f32 + self.travel() as f32 / 2.0
+    }
+
+    /// True when the pane cell at `(x, y)` belongs to this slot.
+    ///
+    /// The whole lane counts, not just the sprite: a sheep wanders inside its
+    /// lane, so hit-testing the drawn body would make clicking it a game of
+    /// timing.
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.lane_x && x < self.lane_x + self.lane_w && y >= self.top && y <= self.y + SPRITE_H
     }
 }
 
@@ -81,10 +96,23 @@ pub struct Zone {
     pub members: Vec<(usize, Slot)>,
 }
 
+/// Background the pasture only draws when there are rows to spare, so scenery
+/// never costs a sheep its standing room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scenery {
+    /// Row carrying the fence along the bottom of the field.
+    pub fence_y: i32,
+    /// Top-left of the barn, which stands on the fence row.
+    pub barn: Option<(i32, i32)>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Plan {
     /// Full pasture with animated sheep.
-    Pasture { zones: Vec<Zone> },
+    Pasture {
+        zones: Vec<Zone>,
+        scenery: Option<Scenery>,
+    },
     /// One line per agent, used when the pasture cannot fit.
     Compact {
         /// Flock indices in display order, already clipped to the viewport.
@@ -100,7 +128,7 @@ impl Plan {
     /// Flock indices in display order, for selection movement.
     pub fn order(&self) -> Vec<usize> {
         match self {
-            Plan::Pasture { zones } => zones
+            Plan::Pasture { zones, .. } => zones
                 .iter()
                 .flat_map(|zone| zone.members.iter().map(|(index, _)| *index))
                 .collect(),
@@ -111,7 +139,7 @@ impl Plan {
 
     /// Slot assigned to a flock index, when the plan places sheep.
     pub fn slot_of(&self, index: usize) -> Option<Slot> {
-        let Plan::Pasture { zones } = self else {
+        let Plan::Pasture { zones, .. } = self else {
             return None;
         };
         zones.iter().find_map(|zone| {
@@ -120,6 +148,26 @@ impl Plan {
                 .find(|(member, _)| *member == index)
                 .map(|(_, slot)| *slot)
         })
+    }
+
+    /// Flock index drawn at pane cell `(x, y)`, for mouse selection.
+    pub fn index_at(&self, x: i32, y: i32) -> Option<usize> {
+        match self {
+            Plan::Pasture { zones, .. } => zones.iter().find_map(|zone| {
+                zone.members
+                    .iter()
+                    .find(|(_, slot)| slot.contains(x, y))
+                    .map(|(index, _)| *index)
+            }),
+            // One agent per row, full width.
+            Plan::Compact { rows, .. } => {
+                if x < 0 || y < HEADER_H {
+                    return None;
+                }
+                rows.get((y - HEADER_H) as usize).copied()
+            }
+            Plan::Empty => None,
+        }
     }
 }
 
@@ -170,8 +218,10 @@ pub fn plan(width: i32, height: i32, statuses: &[Status]) -> Plan {
         return compact(statuses, height);
     }
 
-    // Spend spare rows as one blank row between zones, top down.
+    // Rows nothing needs. Scenery gets first call on them, then what is left
+    // becomes one blank row between zones, top down.
     let mut spare = field_h - needed;
+    let scenery = scenery(width, field_y + field_h, &mut spare);
     let mut y = field_y;
     let mut zones = Vec::with_capacity(groups.len());
 
@@ -184,21 +234,24 @@ pub fn plan(width: i32, height: i32, statuses: &[Status]) -> Plan {
         let cols = lane_count(members.len(), width, min_lane);
         let lane_w = width / cols;
         let pitch = row_pitch(status);
+        let overhead = has_overhead(status) as i32;
         // Overhead decorations sit on the row above the sprite, so the first
         // sprite row drops one further below the zone label.
-        let first_row = y + 1 + has_overhead(status) as i32;
+        let first_row = y + 1 + overhead;
         let placed = members
             .into_iter()
             .enumerate()
             .map(|(seat, index)| {
                 let col = seat as i32 % cols;
                 let row = seat as i32 / cols;
+                let sprite_y = first_row + row * pitch;
                 (
                     index,
                     Slot {
                         lane_x: col * lane_w,
                         lane_w,
-                        y: first_row + row * pitch,
+                        y: sprite_y,
+                        top: sprite_y - overhead,
                     },
                 )
             })
@@ -214,7 +267,27 @@ pub fn plan(width: i32, height: i32, statuses: &[Status]) -> Plan {
         y += zone_h;
     }
 
-    Plan::Pasture { zones }
+    Plan::Pasture { zones, scenery }
+}
+
+/// Claim the bottom of the field for background scenery, out of `spare` rows.
+///
+/// The fence is one row and the barn stands on it, so a barn costs
+/// `BARN_H - 1` rows more. `bottom` is one past the last field row.
+fn scenery(width: i32, bottom: i32, spare: &mut i32) -> Option<Scenery> {
+    if *spare < 1 {
+        return None;
+    }
+    *spare -= 1;
+    let fence_y = bottom - 1;
+
+    // A barn needs its own rows and enough width that it does not crowd the
+    // lanes it stands beside.
+    let barn = (*spare >= BARN_H - 1 && width >= BARN_W + MIN_LANE).then(|| {
+        *spare -= BARN_H - 1;
+        (width - BARN_W - BARN_MARGIN, fence_y - BARN_H + 1)
+    });
+    Some(Scenery { fence_y, barn })
 }
 
 fn min_lane_for(status: Status) -> i32 {
@@ -251,7 +324,14 @@ mod tests {
 
     fn zones(plan: &Plan) -> &[Zone] {
         match plan {
-            Plan::Pasture { zones } => zones,
+            Plan::Pasture { zones, .. } => zones,
+            other => panic!("expected a pasture plan, got {other:?}"),
+        }
+    }
+
+    fn scenery_of(plan: &Plan) -> Option<Scenery> {
+        match plan {
+            Plan::Pasture { scenery, .. } => *scenery,
             other => panic!("expected a pasture plan, got {other:?}"),
         }
     }
@@ -388,5 +468,109 @@ mod tests {
         let plan = plan(120, 40, &statuses);
         assert!(matches!(plan, Plan::Pasture { .. }));
         assert_eq!(plan.order().len(), 12);
+    }
+
+    #[test]
+    fn scenery_waits_until_there_are_rows_to_spare() {
+        let statuses = [Status::Blocked, Status::Working, Status::Idle];
+        // Exactly as tall as the zones need: the field belongs to the sheep.
+        let tight = (1..60)
+            .map(|height| (height, plan(80, height, &statuses)))
+            .find(|(_, plan)| matches!(plan, Plan::Pasture { .. }))
+            .expect("some height fits the pasture");
+        assert_eq!(scenery_of(&tight.1), None, "no spare rows at {}", tight.0);
+
+        // One spare row buys the fence, and it goes on the last field row.
+        let fenced = plan(80, tight.0 + 1, &statuses);
+        let scenery = scenery_of(&fenced).expect("a fence");
+        assert_eq!(scenery.fence_y, tight.0 + 1 - FOOTER_H - 1);
+        assert_eq!(scenery.barn, None, "one row is not a barn");
+
+        // The barn needs its own rows on top of the fence row.
+        let barn = scenery_of(&plan(80, tight.0 + BARN_H, &statuses))
+            .expect("a fence")
+            .barn
+            .expect("a barn");
+        assert_eq!(barn.1 + BARN_H - 1, tight.0 + BARN_H - FOOTER_H - 1);
+        assert!(
+            barn.0 + BARN_W <= 80,
+            "the barn hangs off the pane: {barn:?}"
+        );
+    }
+
+    #[test]
+    fn scenery_never_stands_on_a_sheep() {
+        let statuses = [
+            Status::Blocked,
+            Status::Done,
+            Status::Working,
+            Status::Idle,
+            Status::Unknown,
+        ];
+        for height in 20..60 {
+            let plan = plan(80, height, &statuses);
+            let Plan::Pasture { zones, scenery } = &plan else {
+                continue;
+            };
+            let Some(scenery) = scenery else { continue };
+            let top = scenery.barn.map_or(scenery.fence_y, |(_, y)| y);
+            for zone in zones {
+                for (_, slot) in &zone.members {
+                    assert!(
+                        slot.y + SPRITE_H < top,
+                        "scenery {scenery:?} lands on slot {slot:?} at height {height}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_cell_of_a_zone_belongs_to_one_sheep() {
+        // Slots tile their zone, so a click anywhere below a zone label picks a
+        // sheep, and never two.
+        let statuses = [Status::Working; 4];
+        let plan = plan(80, 40, &statuses);
+        let zone = &zones(&plan)[0];
+        let bottom = zone
+            .members
+            .iter()
+            .map(|(_, slot)| slot.y + SPRITE_H)
+            .max()
+            .unwrap();
+        for y in (zone.label_y + 1)..=bottom {
+            for x in 0..80 {
+                let hits: Vec<usize> = zone
+                    .members
+                    .iter()
+                    .filter(|(_, slot)| slot.contains(x, y))
+                    .map(|(index, _)| *index)
+                    .collect();
+                assert_eq!(hits.len(), 1, "cell ({x}, {y}) hit {hits:?}");
+                assert_eq!(plan.index_at(x, y), Some(hits[0]));
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_chrome_or_open_field_hits_nothing() {
+        let plan = plan(80, 40, &[Status::Blocked, Status::Idle]);
+        assert_eq!(plan.index_at(0, 0), None, "the header is not a sheep");
+        for zone in zones(&plan) {
+            assert_eq!(plan.index_at(2, zone.label_y), None, "{zone:?}");
+        }
+        assert_eq!(plan.index_at(0, 40 - FOOTER_H), None, "the footer");
+        assert_eq!(plan.index_at(-1, 5), None, "outside the pane");
+    }
+
+    #[test]
+    fn a_click_in_the_compact_list_picks_that_row() {
+        let statuses = [Status::Idle, Status::Blocked, Status::Working];
+        let plan = plan(80, 6, &statuses);
+        let rows = plan.order();
+        assert_eq!(plan.index_at(0, HEADER_H), Some(rows[0]));
+        assert_eq!(plan.index_at(40, HEADER_H + 2), Some(rows[2]));
+        assert_eq!(plan.index_at(0, HEADER_H - 1), None);
+        assert_eq!(plan.index_at(0, HEADER_H + 3), None, "past the last row");
     }
 }

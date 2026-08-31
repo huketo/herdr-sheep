@@ -1,8 +1,11 @@
-//! The sheep itself.
+//! The sheep, and the pasture it stands in.
 //!
 //! The Herdr mascot is a side-profile ram with a curled horn and a shell
 //! prompt for a face, so every frame keeps `@` for the horn and a `>_`-shaped
 //! muzzle. Art is authored facing left only; facing right is the mirror.
+//!
+//! Scenery art lives here too, so the modules that reserve space for it can
+//! read its dimensions from the same place as the sheep's.
 
 use crossterm::style::Color;
 
@@ -13,6 +16,20 @@ use crate::theme;
 pub const SPRITE_W: i32 = 8;
 /// Sprite box height in rows.
 pub const SPRITE_H: i32 = 3;
+
+/// Barn width in terminal columns.
+pub const BARN_W: i32 = 9;
+/// Barn height in rows, the last of which stands on the fence.
+pub const BARN_H: i32 = 4;
+
+/// The barn on the far side of the pasture. Padded to its box like the sheep,
+/// so it can be blitted without measuring rows.
+pub const BARN: [&str; BARN_H as usize] = [
+    "  _____  ", //
+    " /     \\ ",
+    " | [+] | ",
+    " |_|_|_| ",
+];
 
 /// Which part of the sheep a glyph belongs to. Drives its color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

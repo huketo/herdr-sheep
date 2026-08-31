@@ -1,16 +1,20 @@
 //! Painting the pasture into a `Screen`.
 
 use crate::herdr::Status;
-use crate::layout::{self, Plan, Slot};
+use crate::layout::{self, Plan, Scenery, Slot};
 use crate::model::{Flock, Sheep};
 use crate::render::{display_width, Screen, Style};
-use crate::sprite::{self, SPRITE_H, SPRITE_W};
+use crate::sprite::{self, BARN_W, SPRITE_H, SPRITE_W};
 use crate::theme;
 
 /// Width of the name column in the compact list.
 const LABEL_COL: i32 = 16;
 
-const KEY_HINTS: &str = "j/k select  enter focus  r refresh  q quit";
+const KEY_HINTS: &str = "j/k select  click/enter focus  r refresh  q quit";
+
+/// Columns between fence posts. Fences are phased on absolute columns, so the
+/// posts of every fence in the pane line up.
+const FENCE_PITCH: i32 = 5;
 
 pub fn draw(screen: &mut Screen, flock: &Flock, plan: &Plan, t: f32) {
     screen.begin_frame();
@@ -20,14 +24,19 @@ pub fn draw(screen: &mut Screen, flock: &Flock, plan: &Plan, t: f32) {
     // never shows through a sprite or a label.
     let mut occupied = chrome_rows(screen);
     match plan {
-        Plan::Pasture { zones } => {
+        Plan::Pasture { zones, scenery } => {
             for zone in zones {
                 mark(&mut occupied, zone.label_y);
                 for (_, slot) in &zone.members {
-                    for y in (slot.y - 1)..=(slot.y + SPRITE_H) {
+                    for y in slot.top..=(slot.y + SPRITE_H) {
                         mark(&mut occupied, y);
                     }
                 }
+            }
+            if let Some(scenery) = scenery {
+                // Only the fence row is off limits: the barn clears its own box
+                // when it paints, so grass keeps growing around it.
+                mark(&mut occupied, scenery.fence_y);
             }
         }
         Plan::Compact { rows, .. } => {
@@ -41,7 +50,10 @@ pub fn draw(screen: &mut Screen, flock: &Flock, plan: &Plan, t: f32) {
 
     header(screen, flock);
     match plan {
-        Plan::Pasture { zones } => {
+        Plan::Pasture { zones, scenery } => {
+            if let Some(scenery) = scenery {
+                horizon(screen, *scenery);
+            }
             for zone in zones {
                 zone_label(
                     screen,
@@ -61,6 +73,43 @@ pub fn draw(screen: &mut Screen, flock: &Flock, plan: &Plan, t: f32) {
         Plan::Empty => empty(screen, flock),
     }
     footer(screen, flock, selected);
+}
+
+/// A run of fence: posts on every `FENCE_PITCH`-th column, rails between.
+fn fence(screen: &mut Screen, x: i32, y: i32, len: i32) {
+    let style = Style::fg(theme::FENCE).dim();
+    for column in x..(x + len) {
+        let glyph = if column.rem_euclid(FENCE_PITCH) == 0 {
+            '|'
+        } else {
+            '-'
+        };
+        screen.put(column, y, glyph, style);
+    }
+}
+
+/// The far side of the pasture: a fence across the field, with the barn
+/// standing on it when the pane is tall enough to have earned one.
+fn horizon(screen: &mut Screen, scenery: Scenery) {
+    fence(screen, 0, scenery.fence_y, screen.width() as i32);
+    let Some((x, y)) = scenery.barn else {
+        return;
+    };
+    let style = Style::fg(theme::BARN).dim();
+    for (offset, art) in sprite::BARN.iter().enumerate() {
+        let row = y + offset as i32;
+        // Clear the box above the fence line, so no tuft of grass ends up
+        // inside the barn or under its roof. The fence row keeps its rails:
+        // the barn stands in the fence, not in front of it.
+        if row < scenery.fence_y {
+            screen.hfill(x, row, BARN_W, ' ', Style::default());
+        }
+        for (col, glyph) in art.chars().enumerate() {
+            if glyph != ' ' {
+                screen.put(x + col as i32, row, glyph, style);
+            }
+        }
+    }
 }
 
 /// Rows the header and footer always own.
@@ -184,11 +233,12 @@ fn tally_word(status: Status, short: bool) -> &'static str {
     }
 }
 
+/// Zone divider: a gate post, the zone's name and tally, then fence.
 fn zone_label(screen: &mut Screen, y: i32, x: i32, width: i32, status: Status, count: usize) {
     let (name, hint) = layout::zone_name(status);
     let color = theme::zone(status);
     let mut cursor = x;
-    cursor += screen.text(cursor, y, "~ ", Style::fg(color).dim(), width);
+    cursor += screen.text(cursor, y, "|- ", Style::fg(theme::FENCE).dim(), width);
     cursor += screen.text(cursor, y, name, Style::fg(color).bold(), x + width - cursor);
     cursor += screen.text(
         cursor,
@@ -197,10 +247,10 @@ fn zone_label(screen: &mut Screen, y: i32, x: i32, width: i32, status: Status, c
         Style::fg(color).dim(),
         x + width - cursor,
     );
-    // Fill the rest of the divider with grass.
+    // The zone is a fenced paddock, so its divider is the fence.
     let remaining = x + width - cursor;
     if remaining > 0 {
-        screen.hfill(cursor, y, remaining, '~', Style::fg(theme::GROUND).dim());
+        fence(screen, cursor, y, remaining);
     }
 }
 
@@ -234,11 +284,11 @@ fn sheep_at(screen: &mut Screen, sheep: &Sheep, slot: Slot, selected: bool, t: f
 
 /// Motion cues that live outside the sprite box.
 ///
-/// Overhead cues use `slot.y - 1`, the row the layout reserved for them, not
-/// the drawn origin: a jumping sheep rises into that row and its sparkles must
-/// not follow it onto the zone divider.
+/// Overhead cues use `slot.top`, the row the layout reserved for them, not the
+/// drawn origin: a jumping sheep rises into that row and its sparkles must not
+/// follow it onto the zone divider.
 fn decorations(screen: &mut Screen, sheep: &Sheep, slot: Slot, x: i32, y: i32, t: f32) {
-    let overhead = slot.y - 1;
+    let overhead = slot.top;
     match sheep.status() {
         Status::Working => {
             // Dust puffs trailing the direction of travel.
@@ -556,6 +606,38 @@ mod tests {
         }
         // The mascot's prompt face is on screen.
         assert!(text.contains(">_") || text.contains("_<"), "{text}");
+    }
+
+    #[test]
+    fn the_pasture_is_fenced_and_a_tall_pane_gets_a_barn() {
+        let mut flock = flock_of(vec![
+            view("w1:p1", Status::Blocked, "deploy"),
+            view("w2:p1", Status::Idle, "scout"),
+        ]);
+        let rows = frame_text(&mut flock, 80, 34);
+
+        // Every zone divider is a stretch of fence.
+        for row in rows.iter().filter(|row| row.contains("GATE")) {
+            assert!(row.contains("|----"), "the GATE zone has no fence: {row:?}");
+        }
+        // The horizon fence sits on the last row of the field.
+        let horizon = rows.len() - layout::FOOTER_H as usize - 1;
+        assert!(
+            rows[horizon].starts_with("|----|"),
+            "no fence on the horizon: {:?}",
+            rows[horizon]
+        );
+        // The barn stands on it, at the far end.
+        assert!(
+            rows[horizon].contains("|_|_|_|"),
+            "the barn is not in the fence line: {:?}",
+            rows[horizon]
+        );
+        assert!(
+            rows[horizon - 2].trim_start().starts_with('/'),
+            "the barn has no roof: {:?}",
+            rows[horizon - 2]
+        );
     }
 
     #[test]
