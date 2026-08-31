@@ -4,6 +4,12 @@ Generated from Conventional Commit messages with [git-cliff](https://git-cliff.o
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-31
+
+### Added
+
+- **pasture**: Give the barn a gambrel roof and shut the gate on GATE
+
 ## [0.2.0] - 2026-08-31
 
 ### Added
@@ -17,6 +23,7 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Adopt rustfmt, cargo-deny, git-cliff, and a justfile
 - Check formatting, lints, tests, and the mouse path on every push
+- **release**: 0.2.0
 
 ### Documentation
 
