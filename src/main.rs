@@ -13,7 +13,10 @@ use std::io::{self, BufWriter, Write};
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use crossterm::{cursor, execute, terminal};
 
 use herdr::{PollResult, Snapshot, Status};
@@ -27,11 +30,25 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_FPS: u64 = 20;
 const DEFAULT_POLL_MS: u64 = 800;
 
+/// How close two clicks on the same sheep have to be to count as a double.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Ask the terminal for button reports, in SGR encoding.
+///
+/// Deliberately not crossterm's `EnableMouseCapture`, which also turns on
+/// motion tracking: the pasture only cares about clicks, and every mouse move
+/// over the pane would be one more event the render loop has to drain.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+/// Hand the mouse back to the terminal.
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+
 const USAGE: &str = "\
 herdr-sheep — watch your Herdr agents as a flock of ASCII sheep
 
 Usage:
   herdr-sheep                    Run the pasture (this is what the plugin pane does)
+  herdr-sheep --open here        Open the pasture over the active Herdr pane
+  herdr-sheep --open side        Open the pasture beside it, or close the open one
   herdr-sheep --snapshot [WxH]   Print one frame as plain text and exit
   herdr-sheep --demo [WxH]       Print one frame with one sheep per state
   herdr-sheep --version
@@ -50,6 +67,10 @@ Keys:
   enter / f        Focus the selected agent's pane
   r                Poll the session now
   q / esc          Leave the pasture
+
+Mouse:
+  click            Select the sheep you clicked
+  double click     Focus that agent's pane
 ";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -64,10 +85,13 @@ enum Command {
         height: u16,
         seconds: u32,
     },
+    /// Ask Herdr to put a pasture pane on screen. Backs the plugin's actions.
+    Open(herdr::Spot),
 }
 
 fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
-    let mut command: Option<bool> = None; // Some(demo)
+    let mut frame: Option<bool> = None; // Some(demo)
+    let mut open: Option<herdr::Spot> = None;
     let mut size: Option<(u16, u16)> = None;
     let mut seconds = 3u32;
     let mut rest = args.into_iter();
@@ -76,8 +100,16 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String
         match arg.as_str() {
             "--help" | "-h" => return Ok(Command::Help),
             "--version" | "-V" => return Ok(Command::Version),
-            "--snapshot" => command = Some(false),
-            "--demo" => command = Some(true),
+            "--snapshot" => frame = Some(false),
+            "--demo" => frame = Some(true),
+            "--open" => {
+                let value = rest.next().ok_or("--open needs here or side")?;
+                open = Some(match value.as_str() {
+                    "here" => herdr::Spot::Here,
+                    "side" => herdr::Spot::Side,
+                    other => return Err(format!("--open wants here or side, got {other:?}")),
+                });
+            }
             "--seconds" => {
                 let value = rest.next().ok_or("--seconds needs a value")?;
                 seconds = value
@@ -96,8 +128,9 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String
         }
     }
 
-    match command {
-        Some(demo) => {
+    match (frame, open) {
+        (Some(_), Some(_)) => Err("--open does not draw frames; pick one".into()),
+        (Some(demo), None) => {
             let (width, height) = size.unwrap_or((88, 30));
             if width < 8 || height < 6 {
                 return Err(format!("{width}x{height} is too small to draw anything"));
@@ -109,8 +142,9 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String
                 seconds,
             })
         }
-        None if size.is_some() => Err("a size only makes sense with --snapshot or --demo".into()),
-        None => Ok(Command::Run),
+        _ if size.is_some() => Err("a size only makes sense with --snapshot or --demo".into()),
+        (None, Some(spot)) => Ok(Command::Open(spot)),
+        (None, None) => Ok(Command::Run),
     }
 }
 
@@ -138,6 +172,7 @@ fn main() -> std::process::ExitCode {
             height,
             seconds,
         } => print_frame(demo, width, height, seconds),
+        Command::Open(spot) => herdr::open(spot),
         Command::Run => run(),
     };
 
@@ -298,6 +333,15 @@ fn action_for(key: KeyEvent) -> Action {
     }
 }
 
+/// Pane cell a left click landed on. Every other mouse report is ignored, so
+/// releases and stray button presses cannot move the selection.
+fn click_at(mouse: MouseEvent) -> Option<(i32, i32)> {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => Some((mouse.column as i32, mouse.row as i32)),
+        _ => None,
+    }
+}
+
 /// Poll once off the render loop, for the `r` key.
 fn refresh_now(tx: Sender<PollResult>) {
     std::thread::spawn(move || {
@@ -319,11 +363,15 @@ fn run() -> Result<(), String> {
 fn enter_terminal(out: &mut impl Write) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
+    out.write_all(MOUSE_ON.as_bytes())?;
+    out.flush()?;
 
-    // A panic must not leave the pane in raw mode on the alternate screen.
+    // A panic must not leave the pane in raw mode, on the alternate screen, or
+    // with the mouse still reporting to a process that is gone.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let mut stdout = io::stdout();
+        let _ = stdout.write_all(MOUSE_OFF.as_bytes());
         let _ = execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show);
         let _ = terminal::disable_raw_mode();
         previous(info);
@@ -332,6 +380,7 @@ fn enter_terminal(out: &mut impl Write) -> io::Result<()> {
 }
 
 fn leave_terminal(out: &mut impl Write) -> io::Result<()> {
+    out.write_all(MOUSE_OFF.as_bytes())?;
     execute!(out, terminal::LeaveAlternateScreen, cursor::Show)?;
     terminal::disable_raw_mode()?;
     out.flush()
@@ -349,6 +398,8 @@ fn pasture(out: &mut impl Write) -> io::Result<()> {
     let mut t = 0.0f32;
     let mut last = Instant::now();
     let mut next_frame = Instant::now();
+    // Sheep and time of the last click, for double-click detection.
+    let mut last_click: Option<(String, Instant)> = None;
 
     loop {
         let timeout = next_frame.saturating_duration_since(Instant::now());
@@ -370,6 +421,25 @@ fn pasture(out: &mut impl Write) -> io::Result<()> {
                     Action::Refresh => refresh_now(tx.clone()),
                     Action::None => {}
                 },
+                Event::Mouse(mouse) => {
+                    let Some((x, y)) = click_at(mouse) else {
+                        continue;
+                    };
+                    // A click selects; clicking the same sheep again focuses
+                    // it, so the mouse can do what enter does.
+                    let Some(pane_id) = flock.select_at(&plan, x, y) else {
+                        continue;
+                    };
+                    let now = Instant::now();
+                    let again = last_click.take().is_some_and(|(id, at)| {
+                        id == pane_id && now.duration_since(at) < DOUBLE_CLICK
+                    });
+                    if again {
+                        herdr::focus_agent(&pane_id);
+                    } else {
+                        last_click = Some((pane_id, now));
+                    }
+                }
                 Event::Resize(width, height) => screen.resize(width, height),
                 _ => {}
             }
@@ -467,6 +537,29 @@ mod tests {
             action_for(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
             Action::None
         );
+    }
+
+    #[test]
+    fn only_a_left_press_counts_as_a_click() {
+        let event = |kind| MouseEvent {
+            kind,
+            column: 12,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            click_at(event(MouseEventKind::Down(MouseButton::Left))),
+            Some((12, 7))
+        );
+        for ignored in [
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Moved,
+            MouseEventKind::ScrollDown,
+        ] {
+            assert_eq!(click_at(event(ignored)), None, "{ignored:?} is not a click");
+        }
     }
 
     #[test]

@@ -212,6 +212,15 @@ impl Flock {
         plan.order().contains(&index).then_some(index)
     }
 
+    /// Select the sheep drawn at pane cell `(x, y)`, and report its pane id.
+    pub fn select_at(&mut self, plan: &Plan, x: i32, y: i32) -> Option<String> {
+        let index = plan.index_at(x, y)?;
+        // A plan is one frame old, so it can name a sheep the last poll dropped.
+        let pane_id = self.sheep.get(index)?.view.pane_id.clone();
+        self.selected = Some(pane_id.clone());
+        Some(pane_id)
+    }
+
     /// Move the selection by `delta` steps in display order.
     pub fn move_selection(&mut self, plan: &Plan, delta: isize) {
         let order = plan.order();
@@ -311,6 +320,31 @@ mod tests {
         flock.apply(snapshot(vec![view("w1:p1", Status::Idle)]));
         assert_eq!(flock.sheep.len(), 1);
         assert_eq!(flock.selected, None);
+    }
+
+    #[test]
+    fn clicking_a_sheep_selects_the_one_you_pointed_at() {
+        let mut flock = Flock::default();
+        flock.apply(snapshot(vec![
+            view("w1:p1", Status::Idle),
+            view("w2:p1", Status::Idle),
+            view("w3:p1", Status::Blocked),
+        ]));
+        let plan = settle(&mut flock, 80, 34, 3.0);
+
+        // Clicking where a sheep is drawn selects that sheep, every time.
+        for index in 0..flock.sheep.len() {
+            let sheep = &flock.sheep[index];
+            let (x, y) = (sheep.x.round() as i32, sheep.y.round() as i32);
+            let pane_id = sheep.view.pane_id.clone();
+            assert_eq!(flock.select_at(&plan, x, y), Some(pane_id.clone()));
+            assert_eq!(flock.selected_index(&plan), Some(index));
+            assert_eq!(flock.selected.as_deref(), Some(pane_id.as_str()));
+        }
+
+        // Clicking the header keeps the selection where it was.
+        assert_eq!(flock.select_at(&plan, 0, 0), None);
+        assert_eq!(flock.selected.as_deref(), Some("w3:p1"));
     }
 
     #[test]
