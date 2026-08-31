@@ -9,7 +9,7 @@ agents need you.
 
 ```text
 (>_@ herdr-sheep        1 waiting on you  1 done  2 working  1 idle  1 unknown
-|- GATE  1 waiting on you ----|----|----|----|----|----|----|----|----|----|--
+|- GATE  1 waiting on you [+]-|----|----|----|----|----|----|----|----|----|--
                                     (?)
                                     ,@~~~.
                                    (o_ ~~ )
@@ -42,10 +42,10 @@ agents need you.
                                     ~~~~~~
                                    mystery
          ,    .   '            .  ,         ,       ,   '        .   '
-.       ,           ,                       .                   ' ,  _____
- .               .                 ,                  .             /     \
-                       ,         ,                                  | [+] |
-|----|----|----|----|----|----|----|----|----|----|----|----|----|--|_|_|_||--
+.       ,           ,                       .                   '   _____
+ .               .                 ,                  .            /_____\
+                       ,         ,                                /|  ^  |\
+|----|----|----|----|----|----|----|----|----|----|----|----|----|-|_|X|_|-|--
 press j or k to pick a sheep
 j/k select  click/enter focus  r refresh  q quit
 ```
@@ -78,7 +78,8 @@ the left edge; agents that exit leave the flock.
 
 ## The pasture
 
-Each zone is a fenced paddock, so its divider is a run of fence. A pane with
+Each zone is a fenced paddock, so its divider is a run of fence — and the zone
+of agents waiting on you carries the shut gate it is named after. A pane with
 rows left over after every sheep has its standing room gets a fence along the
 horizon too, and one with a few more rows gets a barn standing in that fence.
 Scenery never costs a sheep any room: when the pane is exactly as tall as the

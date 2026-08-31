@@ -84,7 +84,7 @@ fn a_demo_frame_fills_the_size_it_was_given_and_no_more() {
     );
     // Fenced zones, and a barn standing in the fence along the horizon.
     assert!(frame.contains("|----"), "no fence:\n{frame}");
-    assert!(frame.contains("|_|_|_|"), "no barn:\n{frame}");
+    assert!(frame.contains("|_|X|_|"), "no barn:\n{frame}");
 }
 
 #[test]

@@ -16,6 +16,9 @@ const KEY_HINTS: &str = "j/k select  click/enter focus  r refresh  q quit";
 /// posts of every fence in the pane line up.
 const FENCE_PITCH: i32 = 5;
 
+/// The shut gate that gives the `GATE` zone its name.
+const GATE: &str = "[+]";
+
 pub fn draw(screen: &mut Screen, flock: &Flock, plan: &Plan, t: f32) {
     screen.begin_frame();
     let selected = flock.selected_index(plan);
@@ -233,7 +236,8 @@ fn tally_word(status: Status, short: bool) -> &'static str {
     }
 }
 
-/// Zone divider: a gate post, the zone's name and tally, then fence.
+/// Zone divider: a gate post, the zone's name and tally, then fence — and for
+/// the zone of agents waiting on you, the gate they are waiting behind.
 fn zone_label(screen: &mut Screen, y: i32, x: i32, width: i32, status: Status, count: usize) {
     let (name, hint) = layout::zone_name(status);
     let color = theme::zone(status);
@@ -247,7 +251,12 @@ fn zone_label(screen: &mut Screen, y: i32, x: i32, width: i32, status: Status, c
         Style::fg(color).dim(),
         x + width - cursor,
     );
-    // The zone is a fenced paddock, so its divider is the fence.
+    // A shut gate, in the zone's own color, so the divider says what the zone
+    // is: this is the gate your approval opens.
+    if status == Status::Blocked && x + width - cursor > display_width(GATE) {
+        cursor += screen.text(cursor, y, GATE, Style::fg(color).bold(), x + width - cursor);
+    }
+    // The zone is a fenced paddock, so the rest of its divider is the fence.
     let remaining = x + width - cursor;
     if remaining > 0 {
         fence(screen, cursor, y, remaining);
@@ -627,9 +636,9 @@ mod tests {
             "no fence on the horizon: {:?}",
             rows[horizon]
         );
-        // The barn stands on it, at the far end.
+        // The barn stands in it, at the far end, under its own roof.
         assert!(
-            rows[horizon].contains("|_|_|_|"),
+            rows[horizon].contains("|_|X|_|"),
             "the barn is not in the fence line: {:?}",
             rows[horizon]
         );
@@ -638,6 +647,36 @@ mod tests {
             "the barn has no roof: {:?}",
             rows[horizon - 2]
         );
+    }
+
+    #[test]
+    fn only_the_zone_that_wants_you_has_a_gate() {
+        let mut flock = flock_of(vec![
+            view("w1:p1", Status::Blocked, "deploy"),
+            view("w2:p1", Status::Idle, "scout"),
+        ]);
+        for row in frame_text(&mut flock, 80, 34) {
+            if row.contains("GATE") {
+                assert!(row.contains(GATE), "the gate zone has no gate: {row:?}");
+            } else {
+                assert!(!row.contains(GATE), "a gate escaped its zone: {row:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_narrow_divider_drops_the_gate_rather_than_overflowing() {
+        // The gate is the first thing the divider gives up, and giving it up
+        // must not push the label past the edge.
+        let mut flock = flock_of(vec![view("w1:p1", Status::Blocked, "deploy")]);
+        for width in 12..40 {
+            for row in frame_text(&mut flock, width, 24) {
+                assert!(
+                    display_width(&row) <= width as i32,
+                    "row overflowed at width {width}: {row:?}"
+                );
+            }
+        }
     }
 
     #[test]

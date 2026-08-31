@@ -18,17 +18,18 @@ pub const SPRITE_W: i32 = 8;
 pub const SPRITE_H: i32 = 3;
 
 /// Barn width in terminal columns.
-pub const BARN_W: i32 = 9;
+pub const BARN_W: i32 = 11;
 /// Barn height in rows, the last of which stands on the fence.
 pub const BARN_H: i32 = 4;
 
-/// The barn on the far side of the pasture. Padded to its box like the sheep,
-/// so it can be blitted without measuring rows.
+/// The barn on the far side of the pasture: a gambrel roof over a hayloft
+/// vent, and a shut door on the ground. Padded to its box like the sheep, so
+/// it can be blitted without measuring rows.
 pub const BARN: [&str; BARN_H as usize] = [
-    "  _____  ", //
-    " /     \\ ",
-    " | [+] | ",
-    " |_|_|_| ",
+    "   _____   ", //
+    "  /_____\\  ",
+    " /|  ^  |\\ ",
+    "  |_|X|_|  ",
 ];
 
 /// Which part of the sheep a glyph belongs to. Drives its color.
@@ -205,6 +206,21 @@ mod tests {
             );
         }
         assert!(MINI.is_ascii());
+    }
+
+    #[test]
+    fn the_barn_fills_its_own_box() {
+        // The layout reserves BARN_W by BARN_H for it, so a row that disagrees
+        // would paint outside the space it was given.
+        for row in BARN {
+            assert!(row.is_ascii(), "non-ascii barn row {row:?}");
+            assert_eq!(
+                row.len(),
+                BARN_W as usize,
+                "barn row must be padded to its box: {row:?}"
+            );
+        }
+        assert_eq!(BARN.len(), BARN_H as usize);
     }
 
     #[test]
