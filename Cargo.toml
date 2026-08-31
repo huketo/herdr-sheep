@@ -1,8 +1,10 @@
 [package]
 name = "herdr-sheep"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.75"
+# The dependency tree's own floor: unicode-segmentation, through crossterm,
+# wants 1.85. Claiming less would be a promise `cargo build` cannot keep.
+rust-version = "1.85"
 description = "Watch your Herdr coding agents as a flock of animated ASCII sheep"
 license = "MIT"
 repository = "https://github.com/huketo/herdr-sheep"

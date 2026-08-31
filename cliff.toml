@@ -1,0 +1,52 @@
+# git-cliff config (https://git-cliff.org). The changelog and every release body are
+# generated from Conventional Commit subjects, so the commit message is the release note:
+#
+#   just changelog          regenerate CHANGELOG.md
+#   git cliff --latest      what the next release body will say
+#
+# Section names follow Keep a Changelog, so a generated file reads like a hand-written one.
+
+[changelog]
+header = """
+# Changelog
+
+Generated from Conventional Commit messages with [git-cliff](https://git-cliff.org).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
+project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+"""
+body = """
+
+{% if version -%}
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## [Unreleased]
+{% endif -%}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }}
+{%- endfor %}
+{% endfor %}"""
+footer = ""
+
+[git]
+conventional_commits = true
+# An unconventional commit is a mistake worth seeing in the changelog rather than a commit
+# that silently disappears from it.
+filter_unconventional = false
+filter_commits = false
+protect_breaking_commits = true
+split_commits = false
+tag_pattern = "v[0-9]*"
+sort_commits = "oldest"
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Changed" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^revert", group = "Removed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Tests" },
+  { message = "^(ci|build|chore)", group = "Development" },
+  { message = "^.*", group = "Other" },
+]
