@@ -1,23 +1,35 @@
 id = "huketo.sheep"
 name = "Herdr Sheep"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.8.0"
 description = "Watch your Herdr agents as a flock of animated ASCII sheep."
 platforms = ["linux", "macos"]
 
+# On `herdr plugin install`, download the prebuilt binary for this platform from the release
+# tagged v<version> above — no Rust toolchain needed. `herdr plugin link` skips build commands,
+# so a local checkout stages its own binary into bin/ with `just install`.
 [[build]]
-command = ["cargo", "build", "--release"]
+command = ["bash", "herdr/install.sh"]
 
+# The pane and both actions run the staged binary by absolute path: a pane's cwd is not the
+# plugin root, and the binary is not on PATH.
 [[panes]]
 id = "pasture"
 title = "Sheep pasture"
 description = "Animated pasture of every agent in the session"
 placement = "split"
-command = ["./target/release/herdr-sheep"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-sheep\""]
 
 [[actions]]
-id = "open-pasture"
-title = "Open sheep pasture"
-description = "Open the pasture pane next to the current pane"
+id = "open-here"
+title = "Sheep: open the pasture here"
+description = "Open the pasture over the active pane, restoring the layout when it closes"
 contexts = ["global"]
-command = ["./scripts/open-pasture.sh"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-sheep\" --open here"]
+
+[[actions]]
+id = "toggle-side"
+title = "Sheep: toggle the pasture side pane"
+description = "Open the pasture in a split beside the active pane, or close the open one"
+contexts = ["global"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-sheep\" --open side"]

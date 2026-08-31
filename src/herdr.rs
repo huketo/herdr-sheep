@@ -12,6 +12,13 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+/// Plugin id, entrypoint, and pane label Herdr knows the pasture by. All three
+/// have to match `herdr-plugin.toml`: `PANE_LABEL` comes from the pane title,
+/// and is the only handle a running pasture pane can be found by.
+const PLUGIN_ID: &str = "huketo.sheep";
+const ENTRYPOINT: &str = "pasture";
+const PANE_LABEL: &str = "Sheep pasture";
+
 /// Lifecycle state Herdr assigns to a recognized agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
@@ -37,14 +44,34 @@ impl<'de> Deserialize<'de> for Status {
     }
 }
 
+/// `herdr api snapshot`.
 #[derive(Debug, Deserialize)]
-struct Envelope {
-    result: EnvelopeResult,
+struct SnapshotEnvelope {
+    result: SnapshotResult,
 }
 
 #[derive(Debug, Deserialize)]
-struct EnvelopeResult {
+struct SnapshotResult {
     snapshot: RawSnapshot,
+}
+
+/// `herdr pane list`, read only for the labels that identify our own pane.
+#[derive(Debug, Deserialize)]
+struct PaneListEnvelope {
+    result: PaneListResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct PaneListResult {
+    #[serde(default)]
+    panes: Vec<PaneRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PaneRow {
+    pane_id: String,
+    #[serde(default)]
+    label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,7 +174,7 @@ fn workspace_display(workspaces: &HashMap<String, RawWorkspace>, id: &str) -> St
 }
 
 fn parse(stdout: &[u8]) -> Result<Snapshot, String> {
-    let envelope: Envelope =
+    let envelope: SnapshotEnvelope =
         serde_json::from_slice(stdout).map_err(|err| format!("snapshot parse failed: {err}"))?;
     let raw = envelope.result.snapshot;
 
@@ -201,21 +228,89 @@ fn parse(stdout: &[u8]) -> Result<Snapshot, String> {
     })
 }
 
-/// Fetch session state once.
-pub fn fetch() -> Result<Snapshot, String> {
-    let output = Command::new(herdr_bin())
-        .args(["api", "snapshot"])
+/// Run the Herdr CLI and hand back its stdout.
+fn call(args: &[&str]) -> Result<Vec<u8>, String> {
+    let bin = herdr_bin();
+    let output = Command::new(&bin)
+        .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|err| format!("cannot run `{} api snapshot`: {err}", herdr_bin()))?;
+        .map_err(|err| format!("cannot run `{bin} {}`: {err}", args.join(" ")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.lines().next().unwrap_or("no stderr").trim();
-        return Err(format!("`herdr api snapshot` failed: {detail}"));
+        return Err(format!("`herdr {}` failed: {detail}", args.join(" ")));
     }
 
-    parse(&output.stdout)
+    Ok(output.stdout)
+}
+
+/// Fetch session state once.
+pub fn fetch() -> Result<Snapshot, String> {
+    parse(&call(&["api", "snapshot"])?)
+}
+
+/// Where `--open` puts the pasture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spot {
+    /// Over the active pane, as an overlay Herdr takes back down when the
+    /// pasture closes.
+    Here,
+    /// A split beside the active pane. One pasture at a time: opening it again
+    /// closes the one that is already up.
+    Side,
+}
+
+/// Open the pasture, or close the open one when `spot` is `Side`.
+///
+/// This is what the plugin's keybinding actions run, so the placement rules
+/// live here instead of in a shell script Herdr would have to carry.
+pub fn open(spot: Spot) -> Result<(), String> {
+    if spot == Spot::Side {
+        if let Some(pane_id) = pasture_pane()? {
+            call(&["plugin", "pane", "close", &pane_id])?;
+            return Ok(());
+        }
+    }
+
+    let mut args = vec![
+        "plugin",
+        "pane",
+        "open",
+        "--plugin",
+        PLUGIN_ID,
+        "--entrypoint",
+        ENTRYPOINT,
+    ];
+    let caller = std::env::var("HERDR_PANE_ID").unwrap_or_default();
+    match spot {
+        // Herdr rejects `--target-pane` for an overlay: an overlay always covers
+        // the pane it is opened from, which is the pane you pressed the key in.
+        Spot::Here => args.extend(["--placement", "overlay"]),
+        Spot::Side => {
+            args.extend(["--placement", "split", "--direction", "right"]);
+            // Name the calling pane, so the split lands beside the pane you
+            // pressed the key in rather than wherever focus happens to be.
+            if !caller.is_empty() {
+                args.extend(["--target-pane", caller.as_str()]);
+            }
+        }
+    }
+    call(&args)?;
+    Ok(())
+}
+
+/// Pane hosting an open pasture, wherever in the session it is.
+fn pasture_pane() -> Result<Option<String>, String> {
+    let panes: PaneListEnvelope = serde_json::from_slice(&call(&["pane", "list"])?)
+        .map_err(|err| format!("pane list parse failed: {err}"))?;
+    Ok(panes
+        .result
+        .panes
+        .into_iter()
+        .find(|pane| pane.label.as_deref() == Some(PANE_LABEL))
+        .map(|pane| pane.pane_id))
 }
 
 /// Result of one poll, as delivered to the render loop.
