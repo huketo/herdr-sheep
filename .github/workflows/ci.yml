@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # herdr/install.sh derives the release download URL from the manifest version, so the
+      # crate and the manifest have to agree before a tag is ever cut.
+      - name: Version lockstep
+        run: bash herdr/check-version.sh
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all-features
+
+      - name: Build (release)
+        run: cargo build --release
+
+      # The pasture is a terminal UI, so CI checks it the two ways it can without a real
+      # terminal: a rendered frame of every agent state, and a pty smoke test that clicks a
+      # sheep and watches what the pane does about it.
+      - name: Render a frame
+        run: ./target/release/herdr-sheep --demo 100x38
+
+      - name: Smoke test the mouse
+        run: python3 scripts/smoke-click.py
