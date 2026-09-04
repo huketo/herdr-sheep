@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "herdr-sheep"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "crossterm",
  "serde",
