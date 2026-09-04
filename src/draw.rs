@@ -375,12 +375,14 @@ fn label(screen: &mut Screen, sheep: &Sheep, slot: Slot, selected: bool) {
     } else {
         Style::fg(theme::wool(&sheep.view.breed))
     };
-    // The name follows the sheep, centered under the sprite and kept inside
-    // the lane so it never runs into a neighbour.
-    let text_w = display_width(&text).min(slot.lane_w);
+    // The name follows the sheep, centered under the sprite and kept inside the
+    // lane, one column short of its right edge so two neighbours' names never
+    // run together.
+    let room = (slot.lane_w - 1).max(1);
+    let text_w = display_width(&text).min(room);
     let centered = sheep.x.round() as i32 + (SPRITE_W - text_w) / 2;
-    let x = centered.clamp(slot.lane_x, slot.lane_x + slot.lane_w - text_w);
-    screen.text_clipped(x, y, &text, style, slot.lane_x + slot.lane_w - x);
+    let x = centered.clamp(slot.lane_x, slot.lane_x + room - text_w);
+    screen.text_clipped(x, y, &text, style, slot.lane_x + room - x);
 }
 
 /// Marks the sheep whose pane Herdr currently focuses.

@@ -4,11 +4,21 @@ Generated from Conventional Commit messages with [git-cliff](https://git-cliff.o
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-04
+
+### Fixed
+
+- **layout**: Spread crowded flocks across spare rows
+
 ## [0.3.0] - 2026-08-31
 
 ### Added
 
 - **pasture**: Give the barn a gambrel roof and shut the gate on GATE
+
+### Development
+
+- **release**: 0.3.0
 
 ## [0.2.0] - 2026-08-31
 

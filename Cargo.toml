@@ -1,6 +1,6 @@
 [package]
 name = "herdr-sheep"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 # The dependency tree's own floor: unicode-segmentation, through crossterm,
 # wants 1.85. Claiming less would be a promise `cargo build` cannot keep.
