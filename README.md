@@ -86,6 +86,12 @@ Scenery never costs a sheep any room: when the pane is exactly as tall as the
 flock needs, the fence and the barn are simply not there. Grass grows on the
 rows nothing else uses, thinning out with distance from the flock.
 
+Tall panes trade spare rows for wider lanes: crowded zones wrap into more rows
+so names have room to read before scenery claims the remaining space. Widening
+stops at a preferred lane width rather than stretching a sparse flock endlessly.
+Each row fills the pane width, including a short last row, and adjacent names
+keep a one-column gap.
+
 ## Install
 
 Requirements: Herdr 0.8.0 or newer. Installing downloads a prebuilt binary for

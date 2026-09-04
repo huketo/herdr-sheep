@@ -17,6 +17,9 @@ pub const HEADER_H: i32 = 1;
 const MIN_LANE: i32 = SPRITE_W + 2;
 /// Narrowest lane a running sheep gets, so there is room to actually run.
 const MIN_RUN_LANE: i32 = SPRITE_W + 6;
+/// Extra columns a lane wants beyond its minimum: room to print the agent's
+/// name under the sheep, which is what spending spare rows on width buys.
+const LABEL_ROOM: i32 = 12;
 /// Columns kept between the barn and the right edge of the pane.
 const BARN_MARGIN: i32 = 2;
 
@@ -171,9 +174,55 @@ impl Plan {
     }
 }
 
+/// Most sheep a zone can stand side by side, at its narrowest lane.
 fn lane_count(members: usize, width: i32, min_lane: i32) -> i32 {
     let per_row = (width / min_lane).max(1);
     per_row.min(members as i32).max(1)
+}
+
+/// Rows a zone occupies: its label, then its sheep stacked `cols` to a row.
+fn zone_rows(members: usize, cols: i32, status: Status) -> i32 {
+    let rows = (members as i32 + cols - 1) / cols;
+    1 + rows * row_pitch(status)
+}
+
+/// Columns per zone, widened into whatever rows the pane has to spare.
+///
+/// Start with dense packing, then reduce columns in the narrowest zone while
+/// another row fits and its lanes are below the preferred width. Zones that
+/// cannot afford another row stop widening; other zones can still use the space.
+fn fit_columns(groups: &[(Status, Vec<usize>)], width: i32, field_h: i32) -> Vec<i32> {
+    let mut cols: Vec<i32> = groups
+        .iter()
+        .map(|(status, members)| lane_count(members.len(), width, min_lane_for(*status)))
+        .collect();
+    let mut used: i32 = groups
+        .iter()
+        .zip(&cols)
+        .map(|((status, members), cols)| zone_rows(members.len(), *cols, *status))
+        .sum();
+    let mut stuck = vec![false; groups.len()];
+
+    // Narrowest lane first, so width goes where the crowding is; ties go to the
+    // zone nearer the top, which keeps the choice deterministic.
+    while let Some(pick) = (0..groups.len())
+        .filter(|&zone| {
+            let (status, _) = &groups[zone];
+            !stuck[zone] && cols[zone] > 1 && width / cols[zone] < ideal_lane_for(*status)
+        })
+        .min_by_key(|&zone| (width / cols[zone], zone))
+    {
+        let (status, members) = &groups[pick];
+        let was = zone_rows(members.len(), cols[pick], *status);
+        let grown = zone_rows(members.len(), cols[pick] - 1, *status);
+        if used - was + grown > field_h {
+            stuck[pick] = true;
+            continue;
+        }
+        used = used - was + grown;
+        cols[pick] -= 1;
+    }
+    cols
 }
 
 /// Assign zones and slots for `statuses`, one entry per sheep in flock order.
@@ -203,14 +252,13 @@ pub fn plan(width: i32, height: i32, statuses: &[Status]) -> Plan {
         })
         .collect();
 
+    // Density is the floor, not the goal: a zone widens its lanes into rows
+    // the field is not otherwise using.
+    let cols_per_zone = fit_columns(&groups, width, field_h);
     let heights: Vec<i32> = groups
         .iter()
-        .map(|(status, members)| {
-            let min_lane = min_lane_for(*status);
-            let cols = lane_count(members.len(), width, min_lane);
-            let rows = (members.len() as i32 + cols - 1) / cols;
-            1 + rows * row_pitch(*status)
-        })
+        .zip(&cols_per_zone)
+        .map(|((status, members), cols)| zone_rows(members.len(), *cols, *status))
         .collect();
 
     let needed: i32 = heights.iter().sum();
@@ -225,14 +273,17 @@ pub fn plan(width: i32, height: i32, statuses: &[Status]) -> Plan {
     let mut y = field_y;
     let mut zones = Vec::with_capacity(groups.len());
 
-    for (zone_index, ((status, members), zone_h)) in groups.into_iter().zip(heights).enumerate() {
+    for (zone_index, (((status, members), zone_h), cols)) in groups
+        .into_iter()
+        .zip(heights)
+        .zip(cols_per_zone)
+        .enumerate()
+    {
         if zone_index > 0 && spare > 0 {
             y += 1;
             spare -= 1;
         }
-        let min_lane = min_lane_for(status);
-        let cols = lane_count(members.len(), width, min_lane);
-        let lane_w = width / cols;
+        let count = members.len() as i32;
         let pitch = row_pitch(status);
         let overhead = has_overhead(status) as i32;
         // Overhead decorations sit on the row above the sprite, so the first
@@ -244,12 +295,20 @@ pub fn plan(width: i32, height: i32, statuses: &[Status]) -> Plan {
             .map(|(seat, index)| {
                 let col = seat as i32 % cols;
                 let row = seat as i32 / cols;
+                // Lanes are shared out per row, not per zone, so a short last
+                // row stretches to the full width instead of leaving cells that
+                // belong to no sheep. Within a row the leftmost `extra` lanes
+                // take one spare column each, so they tile however the width
+                // divides and a click never falls between two sheep.
+                let in_row = (count - row * cols).min(cols);
+                let base = width / in_row;
+                let extra = width % in_row;
                 let sprite_y = first_row + row * pitch;
                 (
                     index,
                     Slot {
-                        lane_x: col * lane_w,
-                        lane_w,
+                        lane_x: col * base + col.min(extra),
+                        lane_w: base + (col < extra) as i32,
                         y: sprite_y,
                         top: sprite_y - overhead,
                     },
@@ -296,6 +355,12 @@ fn min_lane_for(status: Status) -> i32 {
     } else {
         MIN_LANE
     }
+}
+
+/// Preferred width for readable names without stretching sparse flocks further.
+/// Long names still clip; runners have a wider target for motion.
+fn ideal_lane_for(status: Status) -> i32 {
+    min_lane_for(status) + LABEL_ROOM
 }
 
 fn compact(statuses: &[Status], height: i32) -> Plan {
@@ -424,13 +489,101 @@ mod tests {
     }
 
     #[test]
-    fn running_lanes_are_wider_than_standing_lanes() {
-        let running = plan(80, 24, &[Status::Working; 8]);
-        let standing = plan(80, 24, &[Status::Idle; 8]);
+    fn every_lane_clears_the_minimum_for_its_state() {
+        // Widening only ever adds columns, so the floors hold at any size the
+        // pasture accepts: a name has room to print and a runner room to run.
+        for (status, min) in [(Status::Working, MIN_RUN_LANE), (Status::Idle, MIN_LANE)] {
+            for count in [1usize, 5, 12, 40] {
+                for (width, height) in [(80, 24), (80, 48), (170, 20), (170, 48), (240, 60)] {
+                    let statuses = vec![status; count];
+                    let plan = plan(width, height, &statuses);
+                    let Plan::Pasture { zones, .. } = &plan else {
+                        continue;
+                    };
+                    for (_, slot) in &zones[0].members {
+                        assert!(
+                            slot.lane_w >= min,
+                            "{status:?} x{count} at {width}x{height}: lane {slot:?} under {min}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spare_rows_buy_wider_lanes() {
+        // Same flock, two pane heights. The tall pane has rows nothing needs,
+        // so the sheep stack deeper and each lane gets wide enough to print a
+        // name, instead of packing tight and leaving the field empty.
+        let statuses = [Status::Idle; 27];
+        let tight = plan(170, 14, &statuses);
+        let tall = plan(170, 48, &statuses);
+
+        let lane_of = |plan: &Plan| plan.slot_of(0).expect("a slot").lane_w;
+        let rows_of = |plan: &Plan| {
+            let mut ys: Vec<i32> = plan
+                .order()
+                .iter()
+                .filter_map(|i| plan.slot_of(*i))
+                .map(|s| s.y)
+                .collect();
+            ys.sort_unstable();
+            ys.dedup();
+            ys.len()
+        };
+
         assert!(
-            running.slot_of(0).unwrap().lane_w > standing.slot_of(0).unwrap().lane_w,
-            "runners need room to run"
+            lane_of(&tall) > lane_of(&tight),
+            "the tall pane kept the cramped lanes: {} vs {}",
+            lane_of(&tall),
+            lane_of(&tight)
         );
+        assert!(
+            lane_of(&tall) >= MIN_LANE + LABEL_ROOM,
+            "{}",
+            lane_of(&tall)
+        );
+        assert!(rows_of(&tall) > rows_of(&tight));
+    }
+
+    #[test]
+    fn widening_stops_at_the_ideal_lane() {
+        // A near-empty pasture does not spread three sheep across the horizon:
+        // past the ideal width there is nothing left to show.
+        let plan = plan(240, 60, &[Status::Idle; 3]);
+        let slot = plan.slot_of(0).expect("a slot");
+        assert!(
+            slot.lane_w < 240,
+            "three sheep took a lane each row: {slot:?}"
+        );
+        assert!(slot.lane_w >= MIN_LANE + LABEL_ROOM, "{slot:?}");
+    }
+
+    #[test]
+    fn a_short_last_row_still_tiles_the_pane() {
+        // 7 sheep never divide evenly, so some row is short. Every row still
+        // covers the pane end to end, or a click lands on nothing.
+        let plan = plan(77, 40, &[Status::Idle; 7]);
+        let zone = &zones(&plan)[0];
+        let mut by_row: std::collections::HashMap<i32, Vec<Slot>> = Default::default();
+        for (_, slot) in &zone.members {
+            by_row.entry(slot.y).or_default().push(*slot);
+        }
+        assert!(by_row.len() > 1, "expected more than one row: {zone:?}");
+        for (y, mut row) in by_row {
+            row.sort_by_key(|slot| slot.lane_x);
+            assert_eq!(row[0].lane_x, 0, "row {y} starts short: {row:?}");
+            for pair in row.windows(2) {
+                assert_eq!(
+                    pair[0].lane_x + pair[0].lane_w,
+                    pair[1].lane_x,
+                    "row {y} has a gap: {row:?}"
+                );
+            }
+            let last = row.last().expect("a slot");
+            assert_eq!(last.lane_x + last.lane_w, 77, "row {y} ends short: {row:?}");
+        }
     }
 
     #[test]
